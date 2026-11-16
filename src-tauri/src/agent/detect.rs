@@ -1,10 +1,11 @@
-//! Local detection: sherpa-onnx keyword spotting (wake + end phrases) and Silero
-//! VAD (speech segments), both on a single 16 kHz stream. No cloud, works offline.
+//! Local detection: sherpa-onnx keyword spotting (wake + end phrases) on a 16 kHz
+//! stream. No cloud, works offline. Returns the resampled audio so the listener
+//! can accumulate the whole note.
 
 use anyhow::{anyhow, Result};
 use sherpa_onnx::{
-    KeywordSpotter, KeywordSpotterConfig, LinearResampler, OnlineStream, SileroVadModelConfig,
-    VadModelConfig, VoiceActivityDetector,
+    KeywordSpotter, KeywordSpotterConfig, LinearResampler, OnlineStream, VadModelConfig,
+    VoiceActivityDetector,
 };
 use std::path::Path;
 
@@ -19,19 +20,33 @@ pub const END_PHRASE: &str = "Atlas, save note";
 
 const TARGET_RATE: i32 = 16_000;
 
-#[derive(Debug, Clone)]
+/// Pre-roll kept in front of the KWS so the onset of the wake phrase isn't clipped
+/// by Silero's speech-onset latency: ~500 ms of 16 kHz mono.
+const PREROLL_SAMPLES: usize = TARGET_RATE as usize / 2;
+/// Grace period after speech stops before we gate the KWS off, measured in fed
+/// chunks. Keeps brief inter-word pauses from thrashing the gate. The device
+/// delivers chunks every few ms, so ~1 s is comfortably covered by 64 chunks.
+const HANGOVER_CHUNKS: u32 = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DetectEvent {
     Wake,
     End,
-    /// A completed speech segment (16 kHz mono f32).
-    Segment(Vec<f32>),
 }
 
 pub struct Detectors {
     kws: KeywordSpotter,
     kws_stream: OnlineStream,
-    vad: VoiceActivityDetector,
     resampler: Option<LinearResampler>,
+    /// Cheap "is anyone talking?" gate in front of the expensive zipformer KWS.
+    vad: VoiceActivityDetector,
+    /// Rolling buffer of the most recent 16 kHz samples, fed into the KWS on a
+    /// rising speech edge so the wake phrase's start isn't lost.
+    preroll: Vec<f32>,
+    /// Whether the KWS is currently being fed (speech detected / within hangover).
+    active: bool,
+    /// Chunks of grace left before gating the KWS off after speech stops.
+    hangover: u32,
 }
 
 /// A minimal SentencePiece unigram tokenizer (Viterbi over the model's pieces).
@@ -142,21 +157,23 @@ impl Detectors {
             .ok_or_else(|| anyhow!("Failed to load keyword-spotting model (run scripts/fetch-models.sh)"))?;
         let kws_stream = kws.create_stream();
 
-        let vad_cfg = VadModelConfig {
-            silero_vad: SileroVadModelConfig {
-                model: Some(models_dir.join("silero_vad.onnx").to_string_lossy().to_string()),
-                threshold: 0.5,
-                min_silence_duration: 0.8,
-                min_speech_duration: 0.25,
-                window_size: 512,
-                max_speech_duration: 20.0,
-            },
-            sample_rate: TARGET_RATE,
-            num_threads: 1,
-            provider: Some("cpu".to_string()),
-            ..Default::default()
-        };
-        let vad = VoiceActivityDetector::create(&vad_cfg, 30.0)
+        // Silero VAD: a tiny, cheap speech detector that runs continuously so the
+        // heavy zipformer KWS only wakes when someone is actually talking.
+        let mut vad_cfg = VadModelConfig::default();
+        vad_cfg.silero_vad.model = Some(
+            models_dir
+                .join("silero_vad.onnx")
+                .to_string_lossy()
+                .to_string(),
+        );
+        vad_cfg.silero_vad.threshold = 0.5;
+        vad_cfg.silero_vad.min_silence_duration = 0.1;
+        vad_cfg.silero_vad.min_speech_duration = 0.05;
+        vad_cfg.silero_vad.window_size = 512; // Silero window at 16 kHz
+        vad_cfg.sample_rate = TARGET_RATE;
+        vad_cfg.num_threads = 1;
+        vad_cfg.provider = Some("cpu".to_string());
+        let vad = VoiceActivityDetector::create(&vad_cfg, 5.0)
             .ok_or_else(|| anyhow!("Failed to load Silero VAD (run scripts/fetch-models.sh)"))?;
 
         let resampler = if mic_sample_rate as i32 == TARGET_RATE {
@@ -171,23 +188,66 @@ impl Detectors {
         Ok(Self {
             kws,
             kws_stream,
-            vad,
             resampler,
+            vad,
+            preroll: Vec::with_capacity(PREROLL_SAMPLES),
+            active: false,
+            hangover: 0,
         })
     }
 
-    /// Feed a mic-rate mono f32 chunk; returns detection events in audio order.
-    pub fn feed(&mut self, mic: &[f32]) -> Vec<DetectEvent> {
+    /// Feed a mic-rate mono f32 chunk; returns the resampled 16 kHz samples (for the
+    /// listener to accumulate) and any wake/end events.
+    pub fn feed(&mut self, mic: &[f32]) -> (Vec<f32>, Vec<DetectEvent>) {
         let r16: Vec<f32> = match &self.resampler {
             Some(rs) => rs.resample(mic, false),
             None => mic.to_vec(),
         };
         let mut events = Vec::new();
         if r16.is_empty() {
-            return events;
+            return (r16, events);
         }
 
-        // Keyword spotting (wake + end run continuously — never gated by VAD).
+        // Keep the most recent ~500 ms around so a rising speech edge can seed the
+        // KWS with the wake phrase's onset (Silero reports speech a beat late).
+        self.preroll.extend_from_slice(&r16);
+        if self.preroll.len() > PREROLL_SAMPLES {
+            let excess = self.preroll.len() - PREROLL_SAMPLES;
+            self.preroll.drain(..excess);
+        }
+
+        // Cheap gate: run the heavy KWS only when Silero hears speech (plus a short
+        // hangover). We only use `detected()`, so drain the segment queue each time
+        // to keep VAD memory bounded.
+        self.vad.accept_waveform(&r16);
+        let speaking = self.vad.detected();
+        self.vad.clear();
+
+        if speaking {
+            if !self.active {
+                // Rising edge: seed the KWS with the pre-roll so the wake onset
+                // isn't clipped, then fall through to feed this chunk too.
+                self.active = true;
+                let preroll = std::mem::take(&mut self.preroll);
+                self.kws_stream.accept_waveform(TARGET_RATE, &preroll);
+            }
+            self.hangover = HANGOVER_CHUNKS;
+        } else if self.active {
+            if self.hangover > 0 {
+                self.hangover -= 1;
+            } else {
+                // Falling edge: gate off and reset so the next utterance starts
+                // from a clean streaming state.
+                self.active = false;
+                self.kws.reset(&self.kws_stream);
+            }
+        }
+
+        if !self.active {
+            // Silence: skip the expensive encoder entirely.
+            return (r16, events);
+        }
+
         self.kws_stream.accept_waveform(TARGET_RATE, &r16);
         while self.kws.is_ready(&self.kws_stream) {
             self.kws.decode(&self.kws_stream);
@@ -204,20 +264,15 @@ impl Detectors {
             }
         }
 
-        // VAD segmentation.
-        self.vad.accept_waveform(&r16);
-        while !self.vad.is_empty() {
-            if let Some(seg) = self.vad.front() {
-                events.push(DetectEvent::Segment(seg.samples().to_vec()));
-            }
-            self.vad.pop();
-        }
-        events
+        (r16, events)
     }
 
     pub fn reset(&mut self) {
         self.kws.reset(&self.kws_stream);
-        self.vad.clear();
+        self.vad.reset();
+        self.preroll.clear();
+        self.active = false;
+        self.hangover = 0;
         if let Some(rs) = &self.resampler {
             rs.reset();
         }

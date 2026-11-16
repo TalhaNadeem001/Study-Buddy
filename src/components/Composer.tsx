@@ -2,32 +2,13 @@ import { useCallback, useState } from "react";
 import { Mic, MicOff, Send, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { captureText, toMessage } from "../services/ipc";
 import { useVoice } from "../hooks/useVoice";
+import { PHASE_LABEL, PHASE_DOT } from "../lib/voicePhase";
 import type { Settings, VoicePhase } from "../types";
 
 interface Props {
   settings: Settings;
   onCreated: () => void;
 }
-
-const PHASE_LABEL: Record<VoicePhase, string> = {
-  idle: "Not listening",
-  listening: "Listening for your wake phrase…",
-  capturing: "Recording your note…",
-  transcribing: "Finishing transcription…",
-  writing: "Writing the note…",
-  completed: "Saved ✓",
-  error: "Voice error",
-};
-
-const PHASE_DOT: Record<VoicePhase, string> = {
-  idle: "bg-slate-400",
-  listening: "bg-emerald-500 animate-pulse",
-  capturing: "bg-indigo-500 animate-pulse",
-  transcribing: "bg-amber-500 animate-pulse",
-  writing: "bg-amber-500 animate-pulse",
-  completed: "bg-emerald-500",
-  error: "bg-rose-500",
-};
 
 export default function Composer({ settings, onCreated }: Props) {
   const { listening, voice, error: voiceError, toggle } = useVoice();

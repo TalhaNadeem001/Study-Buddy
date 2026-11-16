@@ -96,9 +96,9 @@ fn wav_encoding_has_riff_header_and_data() {
 }
 
 #[test]
-fn kws_and_vad_models_load() {
-    // Exercises the real sherpa-onnx KWS keyword encoding (the thing that failed
-    // when the @label had spaces) + VAD load. Skips if models aren't fetched.
+fn kws_model_loads_with_custom_phrases() {
+    // Exercises the real sherpa-onnx KWS keyword encoding (BPE tokenization of
+    // arbitrary phrases). Skips if models aren't fetched.
     let models = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/models");
     if !models.join("kws/encoder.onnx").exists() {
         eprintln!("skipping kws_and_vad_models_load: run scripts/fetch-models.sh first");

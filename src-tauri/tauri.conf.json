@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
@@ -19,6 +20,21 @@
         "minWidth": 480,
         "minHeight": 480,
         "resizable": true
+      },
+      {
+        "label": "overlay",
+        "title": "Study Buddy — listening",
+        "url": "index.html#/overlay",
+        "width": 260,
+        "height": 64,
+        "visible": false,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "transparent": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "focus": false
       }
     ],
     "security": {

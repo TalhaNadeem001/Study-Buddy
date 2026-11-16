@@ -36,11 +36,14 @@ pub fn run() {
             commands::agent_status,
         ])
         .on_window_event(|window, event| {
-            // Closing the window only hides it — the background agent keeps
-            // running. Quitting is done explicitly from the tray menu.
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
+            // Closing the main window only hides it — the background agent keeps
+            // running. Quitting is done explicitly from the tray menu. The overlay
+            // is driven entirely by the agent, so leave its events alone.
+            if window.label() == "main" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
             }
         })
         .setup(|app| {
@@ -53,6 +56,29 @@ pub fn run() {
 
             // Shared flags for the wake-word listener thread.
             app.manage(VoiceControl::default());
+
+            // Auto-start the always-on wake-word listener so the app is listening
+            // on launch with no button press. Only when voice is configured — an
+            // unkeyed start would just error out immediately.
+            let settings = app.state::<Storage>().load_settings().unwrap_or_default();
+            if crate::ai::api_key(&settings).is_ok() {
+                let voice = app.state::<VoiceControl>();
+                agent::listener::start_listening(
+                    app.handle().clone(),
+                    voice.enabled.clone(),
+                    voice.running.clone(),
+                );
+            }
+
+            // The listening overlay is a display-only indicator: make it
+            // click-through so it never steals focus or intercepts the pointer.
+            // (The agent shows/hides/positions it via the voice-state pipeline.)
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                let _ = overlay.set_ignore_cursor_events(true);
+                // Float it above everything, including fullscreen apps (macOS).
+                #[cfg(target_os = "macos")]
+                float_over_fullscreen(&overlay);
+            }
 
             // System tray so the app is reachable while the window is hidden.
             setup_tray(app)?;
@@ -95,5 +121,34 @@ fn show_main<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
+    }
+}
+
+/// Make the overlay float above everything on macOS — including fullscreen apps.
+///
+/// A fullscreen app lives in its own Space, so an ordinary always-on-top window
+/// stays behind it. Setting the NSWindow collection behavior to include
+/// `FullScreenAuxiliary` lets the overlay join the frontmost fullscreen Space as
+/// an accessory (`CanJoinAllSpaces` + `Stationary` keep it present across Spaces
+/// without animating), and raising the window level orders it above other
+/// floating panels. Must run on the main thread — `setup()` satisfies that.
+#[cfg(target_os = "macos")]
+fn float_over_fullscreen(window: &tauri::WebviewWindow) {
+    use objc2::{msg_send, runtime::AnyObject};
+
+    // NSWindowCollectionBehavior bit flags.
+    const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
+    const STATIONARY: usize = 1 << 4;
+    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+    // Above NSFloatingWindowLevel (3) so it sits over other floating windows.
+    const NS_STATUS_WINDOW_LEVEL: isize = 25;
+
+    if let Ok(ptr) = window.ns_window() {
+        let ns_window = ptr as *mut AnyObject;
+        let behavior = CAN_JOIN_ALL_SPACES | STATIONARY | FULL_SCREEN_AUXILIARY;
+        unsafe {
+            let _: () = msg_send![ns_window, setCollectionBehavior: behavior];
+            let _: () = msg_send![ns_window, setLevel: NS_STATUS_WINDOW_LEVEL];
+        }
     }
 }

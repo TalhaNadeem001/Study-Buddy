@@ -10,14 +10,12 @@ use crate::agent::orchestrator;
 use crate::ai::{self, openai};
 use crate::storage::Storage;
 use serde::Serialize;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 
 // ---- Deterministic state machine (pure, unit-tested) ------------------------
 
@@ -28,23 +26,12 @@ pub enum State {
     Recording,
 }
 
-/// Dispatch emitted when a VAD segment should be transcribed for a note.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SegmentDispatch {
-    pub note: u64,
-    pub index: usize,
-    /// First segment of a note — strip a leading wake phrase from its transcript.
-    pub strip_wake: bool,
-}
-
 /// The controller. Transitions are driven only from the single capture thread,
 /// so they are inherently serialized.
 pub struct Machine {
     pub state: State,
     current_note: Option<u64>,
     next_note_id: u64,
-    seg_index: usize,
-    first_segment: bool,
 }
 
 impl Machine {
@@ -53,8 +40,6 @@ impl Machine {
             state: State::Armed,
             current_note: None,
             next_note_id: 1,
-            seg_index: 0,
-            first_segment: true,
         }
     }
 
@@ -70,89 +55,23 @@ impl Machine {
         let id = self.next_note_id;
         self.next_note_id += 1;
         self.current_note = Some(id);
-        self.seg_index = 0;
-        self.first_segment = true;
         self.state = State::Recording;
         Some(id)
     }
 
-    /// End in RECORDING closes the note's capture interval and rearms. Returns
-    /// `(note_id, total_segments_dispatched)`.
-    pub fn on_end(&mut self) -> Option<(u64, usize)> {
+    /// End in RECORDING closes the note and rearms immediately (independent of
+    /// finalization). Returns the note id.
+    pub fn on_end(&mut self) -> Option<u64> {
         if self.state != State::Recording {
             return None;
         }
         let note = self.current_note.take()?;
-        let total = self.seg_index;
-        self.state = State::Armed; // rearm immediately, independent of finalization
-        Some((note, total))
-    }
-
-    /// A VAD segment commits a transcription unit but never ends the note. Only
-    /// counts while RECORDING (segments in ARMED — e.g. the end-phrase audio or
-    /// ambient speech — are ignored).
-    pub fn on_segment(&mut self) -> Option<SegmentDispatch> {
-        if self.state != State::Recording {
-            return None;
-        }
-        let note = self.current_note?;
-        let index = self.seg_index;
-        let strip_wake = self.first_segment;
-        self.seg_index += 1;
-        self.first_segment = false;
-        Some(SegmentDispatch {
-            note,
-            index,
-            strip_wake,
-        })
+        self.state = State::Armed;
+        Some(note)
     }
 }
 
-// ---- Transcription manager (off the capture thread) -------------------------
-
-enum MgrMsg {
-    Segment {
-        note: u64,
-        index: usize,
-        wav: Vec<u8>,
-        strip_wake: bool,
-    },
-    Close {
-        note: u64,
-        total: usize,
-    },
-}
-
-struct NoteBuf {
-    segments: BTreeMap<usize, String>,
-    received: usize,
-    total: Option<usize>,
-}
-
-impl NoteBuf {
-    fn new() -> Self {
-        Self {
-            segments: BTreeMap::new(),
-            received: 0,
-            total: None,
-        }
-    }
-    fn ready(&self) -> bool {
-        matches!(self.total, Some(t) if self.received >= t)
-    }
-}
-
-/// Assemble a note's completed segments in capture order.
-pub fn assemble(segments: &BTreeMap<usize, String>) -> String {
-    segments
-        .values()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Remove a leading control phrase (wake) from the first segment's transcript,
+/// Remove a leading control phrase (wake) from the transcript,
 /// anchored at the start only — not a global replace.
 pub fn strip_leading_phrase(text: &str, phrase: &str) -> String {
     let t = text.trim_start();
@@ -195,66 +114,79 @@ pub fn strip_leading_phrase(text: &str, phrase: &str) -> String {
     }
 }
 
-fn spawn_manager(app: AppHandle) -> mpsc::Sender<MgrMsg> {
-    let (tx, rx) = mpsc::channel::<MgrMsg>();
-    std::thread::spawn(move || {
-        let mut notes: HashMap<u64, NoteBuf> = HashMap::new();
-        while let Ok(msg) = rx.recv() {
-            match msg {
-                MgrMsg::Segment {
-                    note,
-                    index,
-                    wav,
-                    strip_wake,
-                } => {
-                    let settings = app.state::<Storage>().load_settings().unwrap_or_default();
-                    let mut text = match openai::transcribe(&settings, &wav) {
-                        Ok(t) => t.trim().to_string(),
-                        Err(e) => {
-                            eprintln!("[listener] transcription failed (note {note}, seg {index}): {e}");
-                            String::new()
-                        }
-                    };
-                    if strip_wake && !text.is_empty() {
-                        text = strip_leading_phrase(&text, &settings.wake_phrase);
-                    }
-                    let buf = notes.entry(note).or_insert_with(NoteBuf::new);
-                    buf.received += 1;
-                    if !text.is_empty() {
-                        buf.segments.insert(index, text);
-                    }
-                    if buf.ready() {
-                        finalize(&app, note, notes.remove(&note).unwrap());
-                    }
-                }
-                MgrMsg::Close { note, total } => {
-                    let buf = notes.entry(note).or_insert_with(NoteBuf::new);
-                    buf.total = Some(total);
-                    if buf.ready() {
-                        finalize(&app, note, notes.remove(&note).unwrap());
-                    }
+/// Remove a trailing control phrase (end) from the transcript, anchored at the end.
+pub fn strip_trailing_phrase(text: &str, phrase: &str) -> String {
+    let t = text.trim_end();
+    let words = |s: &str| {
+        s.to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+            .collect::<String>()
+            .split_whitespace()
+            .map(|w| w.to_string())
+            .collect::<Vec<_>>()
+    };
+    let phrase_words = words(phrase);
+    let text_words = words(t);
+    if phrase_words.is_empty() || text_words.len() < phrase_words.len() {
+        return t.to_string();
+    }
+    let tail = &text_words[text_words.len() - phrase_words.len()..];
+    if tail != phrase_words.as_slice() {
+        return t.to_string();
+    }
+    // Keep the raw text up to the end of the (keep)-th word.
+    let keep = text_words.len() - phrase_words.len();
+    let mut counted = 0;
+    let mut end_byte = 0;
+    let mut in_word = false;
+    for (i, c) in t.char_indices() {
+        if c.is_whitespace() {
+            in_word = false;
+        } else {
+            if !in_word {
+                in_word = true;
+                counted += 1;
+                if counted > keep {
+                    break;
                 }
             }
+            end_byte = i + c.len_utf8();
         }
-    });
-    tx
+    }
+    t[..end_byte].trim().to_string()
 }
 
-fn finalize(app: &AppHandle, _note: u64, buf: NoteBuf) {
-    let transcript = assemble(&buf.segments);
-    if transcript.trim().is_empty() {
-        emit_state(app, "listening", Some("Listening for your wake phrase…".to_string()));
+/// Transcribe the whole note clip, strip the wake (leading) and end (trailing)
+/// phrases, and deliver it to the existing pipeline. Runs on its own thread so a
+/// new note can start while this finishes. Errors are surfaced to the UI — never
+/// a silent reset.
+fn finalize_whole(app: AppHandle, wav: Vec<u8>, wake: String, stop: String) {
+    let settings = app.state::<Storage>().load_settings().unwrap_or_default();
+    let raw = match openai::transcribe(&settings, &wav) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[listener] transcription failed: {e}");
+            emit_state(&app, "error", Some(format!("Transcription failed: {e}")));
+            emit_state(&app, "listening", Some("Listening for your wake phrase…".to_string()));
+            return;
+        }
+    };
+    let stripped = strip_trailing_phrase(&strip_leading_phrase(&raw, &wake), &stop);
+    let transcript = stripped.trim();
+    if transcript.is_empty() {
+        emit_state(&app, "listening", Some("Nothing heard — listening again…".to_string()));
         return;
     }
     let storage = app.state::<Storage>();
-    match orchestrator::process_capture(app, storage.inner(), &transcript) {
-        Ok(_) => emit_state(app, "completed", None),
+    match orchestrator::process_capture(&app, storage.inner(), transcript) {
+        Ok(_) => emit_state(&app, "completed", None),
         Err(e) => {
             eprintln!("[listener] deliver failed: {e}");
-            emit_state(app, "error", Some(format!("Failed to save note: {e}")));
+            emit_state(&app, "error", Some(format!("Failed to save note: {e}")));
         }
     }
-    emit_state(app, "listening", Some("Listening for your wake phrase…".to_string()));
+    emit_state(&app, "listening", Some("Listening for your wake phrase…".to_string()));
 }
 
 // ---- Driver (capture thread) ------------------------------------------------
@@ -274,6 +206,65 @@ fn emit_state(app: &AppHandle, state: &str, message: Option<String>) {
             message,
         },
     );
+    update_overlay(app, state);
+}
+
+/// Show/position/hide the always-on-top "listening" overlay to match the voice
+/// phase. Display-only — the agent owns this window; its webview just renders
+/// whatever voice-state it receives. Only active phases are shown; the idle
+/// "waiting for the wake phrase" state keeps the overlay hidden.
+fn update_overlay(app: &AppHandle, state: &str) {
+    let Some(window) = app.get_webview_window("overlay") else {
+        return;
+    };
+    match state {
+        "capturing" | "transcribing" | "writing" => {
+            // Note: don't call set_always_on_top here — on macOS it resets the
+            // native window level, undoing the elevated level/collection behavior
+            // that lets the overlay float over fullscreen apps (set once at
+            // startup in lib.rs::float_over_fullscreen). The window is already
+            // created alwaysOnTop, and that behavior persists across hide/show.
+            position_bottom_right(&window);
+            let _ = window.show();
+        }
+        "completed" => {
+            // Keep "Saved ✓" on screen briefly, then dismiss it.
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(1500));
+                if let Some(w) = app.get_webview_window("overlay") {
+                    let _ = w.hide();
+                }
+            });
+        }
+        _ => {
+            // idle / listening / error — nothing active to show.
+            let _ = window.hide();
+        }
+    }
+}
+
+/// Pin the overlay to the bottom-right corner of the monitor it sits on.
+fn position_bottom_right(window: &tauri::WebviewWindow) {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let Ok(wsize) = window.outer_size() else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let msize = monitor.size();
+    let mpos = monitor.position();
+    let margin_x = (16.0 * scale) as i32;
+    let margin_y = (48.0 * scale) as i32; // lifted higher off the bottom edge
+    let x = mpos.x + msize.width as i32 - wsize.width as i32 - margin_x;
+    let y = mpos.y + msize.height as i32 - wsize.height as i32 - margin_y;
+    let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
 /// Resolve the models directory in both bundled and dev runs.
@@ -320,9 +311,12 @@ fn run_loop(app: &AppHandle, enabled: &Arc<AtomicBool>) -> anyhow::Result<()> {
     let cap = capture::open()?; // owns the single cpal stream on THIS thread
     let mut detectors =
         Detectors::load(&dir, cap.sample_rate, &settings.wake_phrase, &settings.stop_phrase)?;
-    let manager = spawn_manager(app.clone());
 
     let mut machine = Machine::armed();
+    // The whole note's audio (16 kHz) accumulated while RECORDING.
+    let mut note_audio: Vec<f32> = Vec::new();
+    const MAX_NOTE_SAMPLES: usize = 16_000 * 180; // ~3 min safety cap
+
     emit_state(app, "listening", Some("Listening for your wake phrase…".to_string()));
 
     while enabled.load(Ordering::SeqCst) {
@@ -336,37 +330,36 @@ fn run_loop(app: &AppHandle, enabled: &Arc<AtomicBool>) -> anyhow::Result<()> {
             emit_state(app, "error", Some("Audio capture interrupted (overflow)".to_string()));
         }
 
-        for event in detectors.feed(&chunk) {
+        let (r16, events) = detectors.feed(&chunk);
+        let mut ended = false;
+        for event in events {
             match event {
                 DetectEvent::Wake => {
                     if machine.on_wake().is_some() {
+                        note_audio.clear();
                         emit_state(app, "capturing", Some("Recording your note…".to_string()));
                     }
                 }
                 DetectEvent::End => {
-                    if let Some((note, total)) = machine.on_end() {
-                        let _ = manager.send(MgrMsg::Close { note, total });
+                    if machine.on_end().is_some() {
+                        ended = true;
+                        let wav = encode_wav(&f32_to_i16(&note_audio), 16_000)?;
+                        note_audio.clear();
+                        let app2 = app.clone();
+                        let wake = settings.wake_phrase.clone();
+                        let stop = settings.stop_phrase.clone();
+                        std::thread::spawn(move || finalize_whole(app2, wav, wake, stop));
                         emit_state(app, "transcribing", Some("Finishing transcription…".to_string()));
                         detectors.reset();
                     }
                 }
-                DetectEvent::Segment(pcm) => {
-                    if let Some(d) = machine.on_segment() {
-                        // Half a second minimum to avoid transcribing clicks.
-                        if pcm.len() >= 8000 / 2 {
-                            let wav = encode_wav(&f32_to_i16(&pcm), 16_000)?;
-                            let _ = manager.send(MgrMsg::Segment {
-                                note: d.note,
-                                index: d.index,
-                                wav,
-                                strip_wake: d.strip_wake,
-                            });
-                        } else if d.index == 0 {
-                            // too-short first segment: keep the note recording anyway
-                        }
-                    }
-                }
             }
+        }
+
+        // Accumulate after processing events, so the wake chunk's tail is captured
+        // (and later stripped from the text). Skip the end chunk.
+        if machine.state == State::Recording && !ended && note_audio.len() < MAX_NOTE_SAMPLES {
+            note_audio.extend_from_slice(&r16);
         }
     }
 
@@ -388,27 +381,12 @@ mod tests {
     }
 
     #[test]
-    fn segments_only_count_while_recording_and_first_strips_wake() {
-        let mut m = Machine::armed();
-        assert_eq!(m.on_segment(), None, "segment in ARMED is ignored");
-        let n = m.on_wake().unwrap();
-        let s0 = m.on_segment().unwrap();
-        assert_eq!(s0, SegmentDispatch { note: n, index: 0, strip_wake: true });
-        let s1 = m.on_segment().unwrap();
-        assert_eq!(s1, SegmentDispatch { note: n, index: 1, strip_wake: false });
-    }
-
-    #[test]
-    fn end_closes_note_rearms_and_reports_total() {
+    fn end_closes_note_and_rearms() {
         let mut m = Machine::armed();
         let n = m.on_wake().unwrap();
-        m.on_segment();
-        m.on_segment();
-        assert_eq!(m.on_end(), Some((n, 2)));
+        assert_eq!(m.on_end(), Some(n));
         assert_eq!(m.state, State::Armed);
         assert_eq!(m.on_end(), None, "end without a note is ignored");
-        // A segment after rearm (e.g. the end-phrase audio) is ignored.
-        assert_eq!(m.on_segment(), None);
     }
 
     #[test]
@@ -421,19 +399,18 @@ mod tests {
     }
 
     #[test]
-    fn assemble_orders_and_skips_empty() {
-        let mut segs = BTreeMap::new();
-        segs.insert(2usize, "third".to_string());
-        segs.insert(0usize, "first".to_string());
-        segs.insert(1usize, "".to_string());
-        assert_eq!(assemble(&segs), "first third");
-    }
-
-    #[test]
     fn strip_leading_wake_only_at_start() {
         assert_eq!(strip_leading_phrase("Hey Atlas, remember the milk", "Hey Atlas"), "remember the milk");
         assert_eq!(strip_leading_phrase("hey atlas buy eggs", "Hey Atlas"), "buy eggs");
         // Not at the start → untouched.
         assert_eq!(strip_leading_phrase("tell hey atlas later", "Hey Atlas"), "tell hey atlas later");
+    }
+
+    #[test]
+    fn strip_trailing_end_only_at_end() {
+        assert_eq!(strip_trailing_phrase("buy milk and eggs Atlas save note", "Atlas, save note"), "buy milk and eggs");
+        assert_eq!(strip_trailing_phrase("remember this. atlas save note.", "Atlas, save note"), "remember this.");
+        // Not at the end → untouched.
+        assert_eq!(strip_trailing_phrase("atlas save note was the phrase", "Atlas, save note"), "atlas save note was the phrase");
     }
 }
