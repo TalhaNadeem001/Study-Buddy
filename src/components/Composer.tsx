@@ -12,9 +12,10 @@ interface Props {
 const PHASE_LABEL: Record<VoicePhase, string> = {
   idle: "Not listening",
   listening: "Listening for your wake phrase…",
-  capturing: "Capturing your note…",
-  transcribing: "Transcribing…",
+  capturing: "Recording your note…",
+  transcribing: "Finishing transcription…",
   writing: "Writing the note…",
+  completed: "Saved ✓",
   error: "Voice error",
 };
 
@@ -24,6 +25,7 @@ const PHASE_DOT: Record<VoicePhase, string> = {
   capturing: "bg-indigo-500 animate-pulse",
   transcribing: "bg-amber-500 animate-pulse",
   writing: "bg-amber-500 animate-pulse",
+  completed: "bg-emerald-500",
   error: "bg-rose-500",
 };
 
@@ -90,8 +92,9 @@ export default function Composer({ settings, onCreated }: Props) {
         <p className="text-center text-sm text-slate-500">
           {listening ? (
             <>
-              Say <span className="font-semibold text-slate-700">“{settings.wakePhrase}”</span>, then
-              speak your note. Pause (or say “end note”) to finish.
+              Say <span className="font-semibold text-slate-700">“{settings.wakePhrase}”</span>,
+              dictate your note, then say{" "}
+              <span className="font-semibold text-slate-700">“{settings.stopPhrase}”</span> to finish.
             </>
           ) : (
             <>Click the mic to start listening, or type a note below.</>

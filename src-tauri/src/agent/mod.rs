@@ -4,6 +4,9 @@
 //! orchestration, scheduling); for now they are stubs that announce themselves.
 
 pub mod audio;
+pub mod capture;
+pub mod detect;
+pub mod listener;
 pub mod orchestrator;
 pub mod scheduler;
 pub mod voice;

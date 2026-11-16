@@ -110,10 +110,25 @@ cargo clippy           # lint (if installed)
 
 ## Setup
 
-Enter your **OpenAI API key** in Settings (or the `OPENAI_API_KEY` env var) to enable voice
-transcription + AI rewriting. Voice saves to the hardcoded `~/Documents/StudyBuddy/notes.md`.
-macOS mic permission: `src-tauri/Info.plist` declares `NSMicrophoneUsageDescription`; in
-`tauri dev` you may still need to allow the app under System Settings → Privacy → Microphone.
+- **Fetch voice models first:** `./scripts/fetch-models.sh` downloads the sherpa-onnx KWS model
+  + Silero VAD into `src-tauri/resources/models/` (gitignored, ~14 MB). Required before the voice
+  listener works.
+- Enter your **OpenAI API key** in Settings (or the `OPENAI_API_KEY` env var) to enable transcription
+  + AI rewriting. Voice saves to the hardcoded `~/Documents/StudyBuddy/notes.md`.
+- macOS mic permission: `src-tauri/Info.plist` declares `NSMicrophoneUsageDescription`; in
+  `tauri dev` you may still need to allow the app under System Settings → Privacy → Microphone.
+
+## Voice listener (`src-tauri/src/agent/`)
+
+Background listener: **one cpal stream** (`capture.rs`, bounded queue + heartbeat/overflow) →
+**sherpa-onnx local keyword spotting** (wake "Hey Atlas" / end "Atlas, save note") + **Silero VAD**
+segments (`detect.rs`, all offline) → a **deterministic state machine** (`listener.rs::Machine`,
+ARMED/RECORDING/… driven only from the capture thread so transitions are serialized) → per-VAD-segment
+batch **OpenAI `gpt-transcribe`** on a separate manager thread → assembled transcript → existing
+`orchestrator::process_capture` pipeline. Only the **end phrase** finishes a note — pauses never do;
+each note has a stable id so a new note can start while the previous finalizes. Phrases are centralized
+constants in `detect.rs` (tokenized into `resources/models/kws/keywords.txt`). (Phase B — realtime
+`gpt-live-transcribe` + durable recovery — is not built yet.)
 
 ## Roadmap (phases)
 

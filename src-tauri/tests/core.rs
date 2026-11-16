@@ -96,6 +96,21 @@ fn wav_encoding_has_riff_header_and_data() {
 }
 
 #[test]
+fn kws_and_vad_models_load() {
+    // Exercises the real sherpa-onnx KWS keyword encoding (the thing that failed
+    // when the @label had spaces) + VAD load. Skips if models aren't fetched.
+    let models = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/models");
+    if !models.join("kws/encoder.onnx").exists() {
+        eprintln!("skipping kws_and_vad_models_load: run scripts/fetch-models.sh first");
+        return;
+    }
+    // Arbitrary phrases exercise sherpa's runtime BPE tokenization.
+    let result =
+        study_buddy_ai_lib::agent::detect::Detectors::load(&models, 48_000, "hello world", "goodbye now");
+    assert!(result.is_ok(), "detectors should load custom phrases: {:?}", result.err());
+}
+
+#[test]
 fn prompt_builders_reflect_style_and_append_context() {
     let concise = system_prompt("concise");
     assert!(concise.contains("tight, clear notes"));

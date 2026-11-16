@@ -19,11 +19,12 @@ export default function SettingsForm({ settings, onSave }: Props) {
   const [newDir, setNewDir] = useState("");
   const [defaultFolder, setDefaultFolder] = useState(settings.defaultFolder);
   const [defaultNote, setDefaultNote] = useState(settings.defaultNote);
-  const [wakePhrase, setWakePhrase] = useState(settings.wakePhrase);
   const [rewriteStyle, setRewriteStyle] = useState<RewriteStyle>(settings.rewriteStyle);
   const [openaiApiKey, setOpenaiApiKey] = useState(settings.openaiApiKey);
   const [openaiModel, setOpenaiModel] = useState(settings.openaiModel);
   const [transcribeModel, setTranscribeModel] = useState(settings.transcribeModel);
+  const [wakePhrase, setWakePhrase] = useState(settings.wakePhrase);
+  const [stopPhrase, setStopPhrase] = useState(settings.stopPhrase);
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -33,11 +34,12 @@ export default function SettingsForm({ settings, onSave }: Props) {
     setDirs(settings.allowedDirectories);
     setDefaultFolder(settings.defaultFolder);
     setDefaultNote(settings.defaultNote);
-    setWakePhrase(settings.wakePhrase);
     setRewriteStyle(settings.rewriteStyle);
     setOpenaiApiKey(settings.openaiApiKey);
     setOpenaiModel(settings.openaiModel);
     setTranscribeModel(settings.transcribeModel);
+    setWakePhrase(settings.wakePhrase);
+    setStopPhrase(settings.stopPhrase);
   }, [settings]);
 
   const addDir = () => {
@@ -55,11 +57,12 @@ export default function SettingsForm({ settings, onSave }: Props) {
         allowedDirectories: dirs,
         defaultFolder: defaultFolder.trim(),
         defaultNote: defaultNote.trim() || "Inbox",
-        wakePhrase: wakePhrase.trim() || "hey write this note",
         rewriteStyle,
         openaiApiKey: openaiApiKey.trim(),
         openaiModel: openaiModel.trim() || "gpt-4o-mini",
         transcribeModel: transcribeModel.trim() || "gpt-transcribe",
+        wakePhrase: wakePhrase.trim() || "Hey Atlas",
+        stopPhrase: stopPhrase.trim() || "Atlas, save note",
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -139,18 +142,31 @@ export default function SettingsForm({ settings, onSave }: Props) {
           <Mic className="h-4 w-4 text-indigo-500" />
           <h2 className="font-semibold">Voice</h2>
         </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Wake phrase</label>
-          <input
-            value={wakePhrase}
-            onChange={(e) => setWakePhrase(e.target.value)}
-            placeholder="hey write this note"
-            className={field}
-          />
-          <p className="mt-1 text-xs text-slate-400">
-            Say this while listening to start a note, then dictate. Pause (or say “end note”) to
-            finish. Changes apply immediately — no need to restart the listener.
-          </p>
+        <p className="text-sm text-slate-500">
+          Phrases are detected on-device (offline) — no recording or training. Changes apply the next
+          time you start the listener. Clear, multi-word English phrases work best.
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Wake phrase</label>
+            <input
+              value={wakePhrase}
+              onChange={(e) => setWakePhrase(e.target.value)}
+              placeholder="Hey Atlas"
+              className={field}
+            />
+            <p className="mt-1 text-xs text-slate-400">Say this to start a note, then dictate.</p>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">End phrase</label>
+            <input
+              value={stopPhrase}
+              onChange={(e) => setStopPhrase(e.target.value)}
+              placeholder="Atlas, save note"
+              className={field}
+            />
+            <p className="mt-1 text-xs text-slate-400">Say this to finish and save. Pauses never end a note.</p>
+          </div>
         </div>
       </section>
 

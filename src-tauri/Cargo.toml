@@ -26,8 +26,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"
 rusqlite = { version = "0.32", features = ["bundled"] }
 anyhow = "1"
 regex = "1"
-# Voice: cross-platform microphone capture.
+# Voice: cross-platform microphone capture + local keyword spotting / Silero VAD.
 cpal = "0.15"
+# Local keyword spotting (wake/end) + Silero VAD. Prebuilt native libs auto-downloaded.
+sherpa-onnx = "2.0.1"
 # OpenAI HTTP (transcription multipart + chat JSON) and WAV encoding.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 hound = "3"

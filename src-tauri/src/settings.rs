@@ -10,7 +10,6 @@ pub struct Settings {
     pub allowed_directories: Vec<String>,
     pub default_folder: String,
     pub default_note: String,
-    pub wake_phrase: String,
     pub rewrite_style: String,
     /// OpenAI API key (falls back to the OPENAI_API_KEY env var when blank).
     #[serde(default)]
@@ -21,6 +20,12 @@ pub struct Settings {
     /// OpenAI transcription model.
     #[serde(default = "default_transcribe_model")]
     pub transcribe_model: String,
+    /// Spoken phrase that starts a voice note (local keyword spotting).
+    #[serde(default = "default_wake_phrase")]
+    pub wake_phrase: String,
+    /// Spoken phrase that finishes a voice note.
+    #[serde(default = "default_stop_phrase")]
+    pub stop_phrase: String,
     /// Runtime flag: is OpenAI configured? (derived, not user-set.)
     #[serde(default)]
     pub ai_configured: bool,
@@ -32,6 +37,12 @@ fn default_openai_model() -> String {
 fn default_transcribe_model() -> String {
     "gpt-transcribe".to_string()
 }
+fn default_wake_phrase() -> String {
+    "Hey Atlas".to_string()
+}
+fn default_stop_phrase() -> String {
+    "Atlas, save note".to_string()
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -39,11 +50,12 @@ impl Default for Settings {
             allowed_directories: Vec::new(),
             default_folder: String::new(),
             default_note: "Inbox".to_string(),
-            wake_phrase: "hey write this note".to_string(),
             rewrite_style: "concise".to_string(),
             openai_api_key: String::new(),
             openai_model: default_openai_model(),
             transcribe_model: default_transcribe_model(),
+            wake_phrase: default_wake_phrase(),
+            stop_phrase: default_stop_phrase(),
             ai_configured: false,
         }
     }
@@ -67,14 +79,17 @@ impl Settings {
         self.allowed_directories = out;
         // Derived runtime flag for the UI banner (env-var keys aren't reflected here).
         self.ai_configured = !self.openai_api_key.trim().is_empty();
-        if self.wake_phrase.trim().is_empty() {
-            self.wake_phrase = "hey write this note".to_string();
-        }
         if self.openai_model.trim().is_empty() {
             self.openai_model = default_openai_model();
         }
         if self.transcribe_model.trim().is_empty() {
             self.transcribe_model = default_transcribe_model();
+        }
+        if self.wake_phrase.trim().is_empty() {
+            self.wake_phrase = default_wake_phrase();
+        }
+        if self.stop_phrase.trim().is_empty() {
+            self.stop_phrase = default_stop_phrase();
         }
         self
     }

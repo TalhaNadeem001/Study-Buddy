@@ -1,19 +1,17 @@
-use crate::agent::audio;
+use crate::agent::listener;
 use crate::agent::orchestrator::{self, CreateNoteInput, CreateNoteResult};
 use crate::agent::{self, AgentStatus};
 use crate::settings::Settings;
 use crate::storage::{CaptureRecord, NoteRecord, Storage};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
-/// Shared state controlling the wake-word listener thread. `wake` lets a saved
-/// wake phrase apply live, without restarting the listener.
+/// Shared flags controlling the wake-word listener thread.
 #[derive(Default)]
 pub struct VoiceControl {
     pub enabled: Arc<AtomicBool>,
     pub running: Arc<AtomicBool>,
-    pub wake: Arc<Mutex<String>>,
 }
 
 /// Run `work` on a dedicated OS thread and wait for it. The voice/AI paths use
@@ -36,17 +34,8 @@ pub fn get_settings(storage: State<Storage>) -> Result<Settings, String> {
 }
 
 #[tauri::command]
-pub fn set_settings(
-    storage: State<Storage>,
-    voice: State<VoiceControl>,
-    settings: Settings,
-) -> Result<Settings, String> {
-    let saved = storage.save_settings(&settings).map_err(|e| e.to_string())?;
-    // Push the new wake phrase to a running listener so it applies immediately.
-    if let Ok(mut wake) = voice.wake.lock() {
-        *wake = saved.wake_phrase.clone();
-    }
-    Ok(saved)
+pub fn set_settings(storage: State<Storage>, settings: Settings) -> Result<Settings, String> {
+    storage.save_settings(&settings).map_err(|e| e.to_string())
 }
 
 /// Settings-path write (Obsidian-friendly). Kept from Phase 1; the UI's main
@@ -84,16 +73,11 @@ pub fn list_captures(storage: State<Storage>) -> Result<Vec<CaptureRecord>, Stri
     storage.list_captures(200).map_err(|e| e.to_string())
 }
 
-/// Start/stop the wake-word listener.
+/// Start/stop the background voice listener.
 #[tauri::command]
 pub fn set_listening(app: AppHandle, voice: State<VoiceControl>, enabled: bool) -> Result<(), String> {
     if enabled {
-        audio::start_listening(
-            app,
-            voice.enabled.clone(),
-            voice.running.clone(),
-            voice.wake.clone(),
-        );
+        listener::start_listening(app, voice.enabled.clone(), voice.running.clone());
     } else {
         voice.enabled.store(false, Ordering::SeqCst);
     }

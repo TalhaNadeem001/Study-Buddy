@@ -5,8 +5,11 @@ export interface Settings {
   allowedDirectories: string[];
   defaultFolder: string;
   defaultNote: string;
-  wakePhrase: string;
   rewriteStyle: RewriteStyle;
+  /** Spoken phrase that starts a voice note. */
+  wakePhrase: string;
+  /** Spoken phrase that finishes a voice note. */
+  stopPhrase: string;
   /** OpenAI API key (falls back to the OPENAI_API_KEY env var when blank). */
   openaiApiKey: string;
   /** OpenAI chat model used to rewrite notes. */
@@ -50,13 +53,14 @@ export interface AgentStatus {
   ticks: number;
 }
 
-/** Live state of the wake-word voice pipeline. */
+/** Live state of the background voice listener. */
 export type VoicePhase =
   | "idle"
   | "listening"
   | "capturing"
   | "transcribing"
   | "writing"
+  | "completed"
   | "error";
 
 export interface VoiceState {

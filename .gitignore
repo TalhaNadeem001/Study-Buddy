@@ -23,3 +23,6 @@ src-tauri/gen
 !.vscode/extensions.json
 .idea
 *.log
+
+# Voice model assets (fetched via scripts/fetch-models.sh)
+src-tauri/resources/models/
