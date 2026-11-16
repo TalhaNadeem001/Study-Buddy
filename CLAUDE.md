@@ -2,6 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Code search (hard rule)
+
+ALWAYS use the Graphify / codebase-memory MCP tools **first** when searching or exploring this
+codebase, before falling back to Grep/Glob/Read:
+
+- `search_graph` — find functions, structs, enums, routes by name/label/qualified-name
+- `trace_path` — follow call chains and data flow
+- `get_code_snippet` — a symbol's exact source
+- `query_graph` — complex graph queries; `get_architecture` — structure overview
+- `search_code` — graph-augmented text search
+
+If the repo isn't indexed yet, run `index_repository` first. Grep/Glob/Read are only for
+non-code files, configs, and reading a file immediately before editing it.
+
 ## Project
 
 Study Buddy AI is a **desktop study assistant**: an always-on background agent that captures notes, organizes them into Markdown files (Obsidian-friendly), and — in later phases — listens for a wake phrase, transcribes speech on-device, and proactively quizzes you with spaced repetition.

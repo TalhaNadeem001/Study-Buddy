@@ -23,4 +23,7 @@ Use Rust's built-in test framework with descriptive snake_case test names. Cover
 History contains only `Initial commit: Study Buddy AI voice note-taker`; no recurring convention is established. Use concise, action-oriented commit subjects. PRs should explain behavior changes, link relevant issues, report validation, and include screenshots for UI changes.
 
 ## Architecture & Agent Guardrails
-Keep communication through Tauri IPC and preserve commands → orchestrator → services layering. Resolve paths and enforce `is_within_allowed` before writes. Prefer codebase-memory MCP graph tools for code discovery; use text search for configuration, literals, or insufficient graph results.
+Keep communication through Tauri IPC and preserve commands → orchestrator → services layering. Resolve paths and enforce `is_within_allowed` before writes.
+
+## Mandatory Codebase Search Rule
+**Always use Graphify MCP when searching the codebase.** Do not substitute grep, ripgrep, glob, or other search tools. If Graphify MCP is unavailable or returns insufficient results, report the limitation and ask for direction before using an alternative.

@@ -17,7 +17,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -52,15 +52,21 @@ fn emit_state(app: &AppHandle, state: &str, message: Option<String>) {
     );
 }
 
-/// Spawn the capture loop (idempotent while already running).
-pub fn start_listening(app: AppHandle, enabled: Arc<AtomicBool>, running: Arc<AtomicBool>) {
+/// Spawn the capture loop (idempotent while already running). `wake_shared` lets
+/// a saved wake phrase apply live while the listener is running.
+pub fn start_listening(
+    app: AppHandle,
+    enabled: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
+    wake_shared: Arc<Mutex<String>>,
+) {
     if running.swap(true, Ordering::SeqCst) {
         return;
     }
     enabled.store(true, Ordering::SeqCst);
 
     std::thread::spawn(move || {
-        if let Err(e) = run_loop(&app, &enabled) {
+        if let Err(e) = run_loop(&app, &enabled, &wake_shared) {
             emit_state(&app, "error", Some(e.to_string()));
             eprintln!("[agent] voice loop error: {e}");
         } else {
@@ -71,14 +77,21 @@ pub fn start_listening(app: AppHandle, enabled: Arc<AtomicBool>, running: Arc<At
     });
 }
 
-fn run_loop(app: &AppHandle, enabled: &Arc<AtomicBool>) -> Result<()> {
+fn current_wake(shared: &Arc<Mutex<String>>) -> String {
+    shared.lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+fn run_loop(app: &AppHandle, enabled: &Arc<AtomicBool>, wake_shared: &Arc<Mutex<String>>) -> Result<()> {
     let settings = app.state::<Storage>().load_settings()?;
     if ai::api_key(&settings).is_err() {
         return Err(anyhow!("No OpenAI API key set. Add one in Settings to enable voice."));
     }
-    let wake = normalize(&settings.wake_phrase);
-    if wake.is_empty() {
+    if settings.wake_phrase.trim().is_empty() {
         return Err(anyhow!("No wake phrase set in Settings."));
+    }
+    // Seed the shared wake phrase from current settings; set_settings updates it live.
+    if let Ok(mut w) = wake_shared.lock() {
+        *w = settings.wake_phrase.clone();
     }
 
     let (device, config, sample_format, channels) = open_input()?;
@@ -118,6 +131,8 @@ fn run_loop(app: &AppHandle, enabled: &Arc<AtomicBool>) -> Result<()> {
                         let audio = std::mem::take(&mut utterance);
                         in_speech = false;
                         silence_ms = 0;
+                        // Read the (possibly just-edited) wake phrase per utterance.
+                        let wake = normalize(&current_wake(wake_shared));
                         handle_utterance(app, &settings, &audio, sample_rate, &wake, &mut capturing, &mut note)?;
                         if capturing {
                             last_activity = Instant::now();
@@ -188,7 +203,7 @@ fn handle_utterance(
             note.push(' ');
             emit_state(app, "capturing", Some("Dictating… (pause or say “end note”)".to_string()));
         }
-    } else if norm.contains(wake) {
+    } else if !wake.is_empty() && norm.contains(wake) {
         *capturing = true;
         // Keep anything the user said after the wake phrase in the same breath.
         let after = strip_through(&text, &settings.wake_phrase);

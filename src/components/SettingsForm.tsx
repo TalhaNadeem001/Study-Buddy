@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2, Save, Loader2, CheckCircle2, AlertTriangle, Sparkles } from "lucide-react";
+import { Plus, Trash2, Save, Loader2, CheckCircle2, AlertTriangle, Sparkles, Mic } from "lucide-react";
 import { toMessage } from "../services/ipc";
 import type { RewriteStyle, Settings } from "../types";
 
@@ -71,7 +71,7 @@ export default function SettingsForm({ settings, onSave }: Props) {
   };
 
   const field =
-    "w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500";
+    "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500";
 
   return (
     <div className="space-y-6">
@@ -130,6 +130,27 @@ export default function SettingsForm({ settings, onSave }: Props) {
             />
             <p className="mt-1 text-xs text-slate-400">Speech → text for voice capture.</p>
           </div>
+        </div>
+      </section>
+
+      {/* Voice */}
+      <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+        <div className="flex items-center gap-2">
+          <Mic className="h-4 w-4 text-indigo-500" />
+          <h2 className="font-semibold">Voice</h2>
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-slate-700">Wake phrase</label>
+          <input
+            value={wakePhrase}
+            onChange={(e) => setWakePhrase(e.target.value)}
+            placeholder="hey write this note"
+            className={field}
+          />
+          <p className="mt-1 text-xs text-slate-400">
+            Say this while listening to start a note, then dictate. Pause (or say “end note”) to
+            finish. Changes apply immediately — no need to restart the listener.
+          </p>
         </div>
       </section>
 
@@ -194,16 +215,6 @@ export default function SettingsForm({ settings, onSave }: Props) {
             placeholder="Inbox"
             className={field}
           />
-        </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Wake phrase</label>
-          <input
-            value={wakePhrase}
-            onChange={(e) => setWakePhrase(e.target.value)}
-            placeholder="hey write this note"
-            className={field}
-          />
-          <p className="mt-1 text-xs text-slate-400">Used by the voice pipeline (Phase 2).</p>
         </div>
         <div>
           <label className="mb-1 block text-sm font-medium text-slate-700">Rewrite style</label>
