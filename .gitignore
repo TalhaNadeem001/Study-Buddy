@@ -1,12 +1,25 @@
-node_modules/
-dist/
-build/
-*.log
+# Dependencies
+node_modules
+.pnp
+.pnp.js
 
-# Secrets & local config
+# Build output
+dist
+dist-ssr
+*.local
+
+# Rust / Tauri
+src-tauri/target
+src-tauri/gen
+
+# Env / secrets
 .env
-.env.local
-backend/data/settings.json
+.env.*
+!.env.example
 
-# OS
+# Editor / OS
 .DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.log

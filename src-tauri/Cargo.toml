@@ -1,0 +1,39 @@
+[package]
+name = "study-buddy-ai"
+version = "0.1.0"
+description = "Voice-activated study assistant (Tauri 2 + Rust background agent)"
+authors = ["Study Buddy AI"]
+edition = "2021"
+
+# The app logic lives in a library crate so integration tests (and later, mobile
+# targets) can share it. `main.rs` is a thin shim calling `run()`.
+[lib]
+name = "study_buddy_ai_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Background runtime for later phases (voice pipeline, scheduler tasks).
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+# Local storage: SQLite (bundled, FTS5-enabled) + FTS5 full-text search.
+rusqlite = { version = "0.32", features = ["bundled"] }
+anyhow = "1"
+regex = "1"
+# Voice: cross-platform microphone capture.
+cpal = "0.15"
+# OpenAI HTTP (transcription multipart + chat JSON) and WAV encoding.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+hound = "3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[features]
+# this feature is used for production builds or when a dev server is not specified,
+# DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
